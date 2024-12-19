@@ -1,0 +1,244 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isOwner() {
+      return request.auth != null && 
+        (resource == null 
+          ? request.resource.data.userId == request.auth.uid
+          : resource.data.userId == request.auth.uid);
+    }
+
+    function isTeamMember() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        (resource == null || 
+          get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId);
+    }
+
+    function canTeamMemberCreate() {
+      let team = get(/databases/$(database)/documents/teamMembers/$(request.auth.uid));
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        team.data.permissions.modules.sites == true &&
+        team.data.permissions.canCreate == true;
+    }
+
+    function canTeamMemberEdit() {
+      let team = get(/databases/$(database)/documents/teamMembers/$(request.auth.uid));
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        team.data.ownerId == resource.data.userId &&
+        team.data.permissions.modules.sites == true &&
+        team.data.permissions.canEdit == true;
+    }
+
+    function canTeamMemberDelete() {
+      let team = get(/databases/$(database)/documents/teamMembers/$(request.auth.uid));
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        team.data.ownerId == resource.data.userId &&
+        team.data.permissions.modules.sites == true &&
+        team.data.permissions.canDelete == true;
+    }
+
+    // User profiles
+    match /users/{userId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) ||
+        exists(/databases/$(database)/documents/teamMembers/$(userId))
+      );
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Client management with self-onboarding support
+    match /clients/{clientId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId
+      );
+      // Allow creation for both authenticated users and self-onboarding clients
+      allow create: if 
+        (request.auth != null && request.resource.data.userId == request.auth.uid) ||
+        (request.resource.data.selfOnboarded == true && 
+         request.resource.data.status == 'pending_approval');
+      allow update, delete: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.clients == true &&
+        (
+          (request.method == 'update' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canEdit == true) ||
+          (request.method == 'delete' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canDelete == true)
+        )
+      );
+    }
+
+    // Team management
+    match /teamMembers/{memberId} {
+      allow read: if request.auth != null && (
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid))
+      );
+      allow create, update: if request.auth != null && (
+        request.resource.data.ownerId == request.auth.uid
+      );
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+    }
+
+    // Team invitations
+    match /teamInvites/{inviteId} {
+      allow read: if request.auth != null && (
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.email == request.auth.token.email
+      );
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+      allow update: if request.auth != null && (
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.email == request.auth.token.email
+      );
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+    }
+
+    // Team chat messages
+    match /messages/{messageId} {
+      allow read: if request.auth != null && (
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid))
+      );
+      allow create: if request.auth != null && (
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        request.resource.data.senderId == request.auth.uid
+      );
+      allow update, delete: if request.auth != null && resource.data.senderId == request.auth.uid;
+    }
+
+    // Sites management
+    match /sites/{siteId} {
+      allow read: if request.auth != null && (isOwner() || isTeamMember());
+      allow create: if request.auth != null && (isOwner() || canTeamMemberCreate());
+      allow update, delete: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.sites == true &&
+        (
+          (request.method == 'update' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canEdit == true) ||
+          (request.method == 'delete' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canDelete == true)
+        )
+      );
+    }
+
+    // Hosting accounts
+    match /hostingAccounts/{accountId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId
+      );
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.hosting == true &&
+        (
+          (request.method == 'update' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canEdit == true) ||
+          (request.method == 'delete' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canDelete == true)
+        )
+      );
+    }
+
+    // Mobile apps
+    match /mobileApps/{appId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId
+      );
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.mobileApps == true &&
+        (
+          (request.method == 'update' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canEdit == true) ||
+          (request.method == 'delete' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canDelete == true)
+        )
+      );
+    }
+
+    // Developer accounts
+    match /developerAccounts/{accountId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId
+      );
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.developerAccounts == true &&
+        (
+          (request.method == 'update' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canEdit == true) ||
+          (request.method == 'delete' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canDelete == true)
+        )
+      );
+    }
+
+    // Tasks
+    match /tasks/{taskId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.tasks == true
+      );
+      allow create: if request.auth != null && (
+        request.resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.tasks == true &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canCreate == true
+      );
+      allow update, delete: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.modules.tasks == true &&
+        (
+          (request.method == 'update' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canEdit == true) ||
+          (request.method == 'delete' && get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.permissions.canDelete == true)
+        )
+      );
+    }
+
+    // Notifications
+    match /notifications/{notificationId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        exists(/databases/$(database)/documents/teamMembers/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/teamMembers/$(request.auth.uid)).data.ownerId == resource.data.userId
+      );
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+
+    // Notification settings
+    match /notificationSettings/{settingId} {
+      allow read, write: if request.auth != null && (
+        resource == null || 
+        resource.data.userId == request.auth.uid
+      );
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
